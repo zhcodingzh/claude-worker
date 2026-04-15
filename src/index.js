@@ -212,9 +212,8 @@ async function streamResponse(body, writer, encoder, model) {
           await writer.write(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
         }
 
-        // message_stop 或 message_delta(end_turn) 发结束标志
-        if (data.type === 'message_stop' ||
-            (data.type === 'message_delta' && data.delta?.stop_reason)) {
+        // message_stop 发结束标志（忽略 message_delta stop_reason，避免重复 [DONE]）
+        if (data.type === 'message_stop') {
           const doneChunk = {
             id,
             object: 'chat.completion.chunk',
