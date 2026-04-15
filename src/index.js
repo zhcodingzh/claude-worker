@@ -16,26 +16,49 @@ export default {
 
     // 调试端点: /{org_id}/debug — 直接透传 Claude 原始 SSE
     if (pathParts.length >= 2 && pathParts[pathParts.length - 1] === 'debug') {
-      const orgId = pathParts[0];
-      const cookie = request.headers.get('cookie') || '';
-      const body = await request.json();
-      const messages = body.messages || [];
-      const systemMsg = messages.find(m => m.role === 'system')?.content || '';
-      const lastUserMsg = messages.filter(m => m.role === 'user').pop()?.content || '';
-      const prompt = systemMsg ? `${systemMsg}\n\n${lastUserMsg}` : lastUserMsg;
+      try {
+        const orgId = pathParts[0];
+        const cookie = request.headers.get('cookie') || '';
+        const body = await request.json();
+        const messages = body.messages || [];
+        const systemMsg = messages.find(m => m.role === 'system')?.content || '';
+        const lastUserMsg = messages.filter(m => m.role === 'user').pop()?.content || '';
+        const prompt = systemMsg ? `${systemMsg}\n\n${lastUserMsg}` : lastUserMsg;
 
-      const convRes = await fetch(
-        `https://claude.ai/api/organizations/${orgId}/chat_conversations`,
-        { method: 'POST', headers: { 'content-type': 'application/json', 'cookie': cookie, 'anthropic-client-platform': 'web_claude_ai', 'origin': 'https://claude.ai', 'referer': 'https://claude.ai/' },
-          body: JSON.stringify({ name: '', uuid: crypto.randomUUID() }) }
-      );
-      const conv = await convRes.json();
-      const msgRes = await fetch(
-        `https://claude.ai/api/organizations/${conv.uuid}/chat_conversations/${conv.uuid}/completion`,
-        { method: 'POST', headers: { 'content-type': 'application/json', 'accept': 'text/event-stream', 'cookie': cookie, 'anthropic-client-platform': 'web_claude_ai', 'origin': 'https://claude.ai', 'referer': 'https://claude.ai/' },
-          body: JSON.stringify({ prompt, model: 'claude-sonnet-4-6', timezone: 'America/Toronto', rendering_mode: 'messages', parent_message_uuid: '00000000-0000-4000-8000-000000000000', attachments: [], files: [], tools: [], sync_sources: [] }) }
-      );
-      return new Response(msgRes.body, { headers: { 'content-type': 'text/plain; charset=utf-8', 'access-control-allow-origin': '*' } });
+        const claudeHeaders = {
+          'content-type': 'application/json',
+          'cookie': cookie,
+          'anthropic-client-platform': 'web_claude_ai',
+          'origin': 'https://claude.ai',
+          'referer': 'https://claude.ai/',
+          'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        };
+
+        const convUuid = crypto.randomUUID();
+        const convRes = await fetch(
+          `https://claude.ai/api/organizations/${orgId}/chat_conversations`,
+          { method: 'POST', headers: claudeHeaders, body: JSON.stringify({ name: '', uuid: convUuid }) }
+        );
+        if (!convRes.ok) {
+          const t = await convRes.text();
+          return new Response(`Create conv failed ${convRes.status}: ${t}`, { status: 200, headers: { 'content-type': 'text/plain', 'access-control-allow-origin': '*' } });
+        }
+        const conv = await convRes.json();
+        const convId = conv.uuid;
+
+        const msgRes = await fetch(
+          `https://claude.ai/api/organizations/${orgId}/chat_conversations/${convId}/completion`,
+          { method: 'POST', headers: { ...claudeHeaders, 'accept': 'text/event-stream' },
+            body: JSON.stringify({ prompt, model: 'claude-sonnet-4-6', timezone: 'America/Toronto', rendering_mode: 'messages', parent_message_uuid: '00000000-0000-4000-8000-000000000000', attachments: [], files: [], tools: [], sync_sources: [] }) }
+        );
+        if (!msgRes.ok) {
+          const t = await msgRes.text();
+          return new Response(`Send msg failed ${msgRes.status}: ${t}`, { status: 200, headers: { 'content-type': 'text/plain', 'access-control-allow-origin': '*' } });
+        }
+        return new Response(msgRes.body, { headers: { 'content-type': 'text/plain; charset=utf-8', 'access-control-allow-origin': '*' } });
+      } catch (e) {
+        return new Response(`Error: ${e.message}\n${e.stack}`, { status: 200, headers: { 'content-type': 'text/plain', 'access-control-allow-origin': '*' } });
+      }
     }
 
     // 期望路径: /{org_id}/chat/completions
