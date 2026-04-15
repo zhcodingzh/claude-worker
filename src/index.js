@@ -179,6 +179,7 @@ async function streamResponse(body, writer, encoder, model) {
   const decoder = new TextDecoder();
   let buffer = '';
   const id = `chatcmpl-${crypto.randomUUID()}`;
+  const created = Math.floor(Date.now() / 1000);
 
   try {
     while (true) {
@@ -197,37 +198,34 @@ async function streamResponse(body, writer, encoder, model) {
         let data;
         try { data = JSON.parse(dataStr); } catch { continue; }
 
-        // 提取文本内容
-        const parts = data?.message?.content?.parts;
-        if (!parts) continue;
-        const text = parts.filter(p => typeof p === 'string').join('');
-        if (!text) continue;
+        // content_block_delta 事件携带文本增量
+        if (data.type === 'content_block_delta' && data.delta?.type === 'text_delta') {
+          const text = data.delta.text;
+          if (!text) continue;
+          const chunk = {
+            id,
+            object: 'chat.completion.chunk',
+            created,
+            model,
+            choices: [{ index: 0, delta: { content: text }, finish_reason: null }]
+          };
+          await writer.write(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+        }
 
-        // 转成 OpenAI SSE chunk 格式
-        const chunk = {
-          id,
-          object: 'chat.completion.chunk',
-          created: Math.floor(Date.now() / 1000),
-          model,
-          choices: [{
-            index: 0,
-            delta: { role: 'assistant', content: text },
-            finish_reason: null,
-          }]
-        };
-        await writer.write(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+        // message_stop 或 message_delta(end_turn) 发结束标志
+        if (data.type === 'message_stop' ||
+            (data.type === 'message_delta' && data.delta?.stop_reason)) {
+          const doneChunk = {
+            id,
+            object: 'chat.completion.chunk',
+            created,
+            model,
+            choices: [{ index: 0, delta: {}, finish_reason: 'stop' }]
+          };
+          await writer.write(encoder.encode(`data: ${JSON.stringify(doneChunk)}\n\ndata: [DONE]\n\n`));
+        }
       }
     }
-
-    // 结束标志
-    const doneChunk = {
-      id,
-      object: 'chat.completion.chunk',
-      created: Math.floor(Date.now() / 1000),
-      model,
-      choices: [{ index: 0, delta: {}, finish_reason: 'stop' }]
-    };
-    await writer.write(encoder.encode(`data: ${JSON.stringify(doneChunk)}\n\ndata: [DONE]\n\n`));
   } finally {
     writer.close();
   }
