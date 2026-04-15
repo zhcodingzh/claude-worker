@@ -14,6 +14,30 @@ export default {
     const url = new URL(request.url);
     const pathParts = url.pathname.split('/').filter(Boolean);
 
+    // 调试端点: /{org_id}/debug — 直接透传 Claude 原始 SSE
+    if (pathParts.length >= 2 && pathParts[pathParts.length - 1] === 'debug') {
+      const orgId = pathParts[0];
+      const cookie = request.headers.get('cookie') || '';
+      const body = await request.json();
+      const messages = body.messages || [];
+      const systemMsg = messages.find(m => m.role === 'system')?.content || '';
+      const lastUserMsg = messages.filter(m => m.role === 'user').pop()?.content || '';
+      const prompt = systemMsg ? `${systemMsg}\n\n${lastUserMsg}` : lastUserMsg;
+
+      const convRes = await fetch(
+        `https://claude.ai/api/organizations/${orgId}/chat_conversations`,
+        { method: 'POST', headers: { 'content-type': 'application/json', 'cookie': cookie, 'anthropic-client-platform': 'web_claude_ai', 'origin': 'https://claude.ai', 'referer': 'https://claude.ai/' },
+          body: JSON.stringify({ name: '', uuid: crypto.randomUUID() }) }
+      );
+      const conv = await convRes.json();
+      const msgRes = await fetch(
+        `https://claude.ai/api/organizations/${conv.uuid}/chat_conversations/${conv.uuid}/completion`,
+        { method: 'POST', headers: { 'content-type': 'application/json', 'accept': 'text/event-stream', 'cookie': cookie, 'anthropic-client-platform': 'web_claude_ai', 'origin': 'https://claude.ai', 'referer': 'https://claude.ai/' },
+          body: JSON.stringify({ prompt, model: 'claude-sonnet-4-6', timezone: 'America/Toronto', rendering_mode: 'messages', parent_message_uuid: '00000000-0000-4000-8000-000000000000', attachments: [], files: [], tools: [], sync_sources: [] }) }
+      );
+      return new Response(msgRes.body, { headers: { 'content-type': 'text/plain; charset=utf-8', 'access-control-allow-origin': '*' } });
+    }
+
     // 期望路径: /{org_id}/chat/completions
     if (pathParts.length < 2 || pathParts[pathParts.length - 1] !== 'completions') {
       return new Response('Not found', { status: 404 });
